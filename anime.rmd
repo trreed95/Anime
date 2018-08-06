@@ -1,0 +1,676 @@
+---
+title: "anime"
+author: "Garcia.Heather and Tyler.Reed"
+date: "July 8, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sqldf)
+library(caret)
+library(timeDate)
+library(dplyr)
+library(data.table)
+library(tidyverse)
+library(randomForest)
+library(e1071)
+library(ggplot2)
+library(corrplot)
+```
+
+Main is on the bottom of this file. 
+
+64M records in the file.
+83K for one anime show (21)
+
+## Process the user to anime file. 
+There are 64Mil rows in the file.  We cannot read it into memory in it's entirity.  
+We plan to run this with a few randomly sampled anime ids so that we can create a sample of the data. 
+```{r}
+prc.usr.anime.file = function(rc, wd){
+  # how many rows to count and the skip for the for loop.
+  rowcnt= rc
+  skp = 0
+  
+  #How many times to run the loop based upon the size of the file
+  loop.number = ceiling(66000000/rowcnt)
+  
+  #The files that we are going to read and write, Shortens the code below.
+  usr.anime.file = paste0(wd, "/myAnimeList Dataset/extracted data/UserAnimeList.csv")
+  wrt.usr.anime.file = paste0(wd,"/code/output/MycleanUserAnimeList.csv")
+  
+  #Read the file and process rowcnt number of rows to pull an anime from the list of users. 
+  #pr[which(pr[,2] == 21),]
+  
+  set.seed(123)
+  for (i in 1:loop.number){
+    if(i==1){
+      pr = read.csv(usr.anime.file, nrows = rowcnt, skip = skp, header = T)
+      write.table(pr[sample(nrow(pr), 20),], wrt.usr.anime.file, append = T, sep = ",", col.names = T, row.names = F)
+    }else{
+      pr = read.csv(usr.anime.file, nrows = rowcnt, skip = skp, header = F)
+      write.table(pr[sample(nrow(pr), 20),], wrt.usr.anime.file, append = T, sep = ",", col.names = F, row.names = F)
+    }
+    
+    skp = skp + rowcnt
+    
+    print(skp) 
+    #print(head(pr))
+    print(nrow(pr))
+  }
+}
+
+```
+
+#Read in the file
+```{r}
+read.file = function (dir, f){
+  file = paste0(wd, "/", dir, "/", f)
+  ds = read.csv(file, sep = ",", header = T)
+  return (ds)
+}
+
+```
+
+#Join the datasets
+
+We decided on the fields in the join becuase:
+1. Removed fields that would require text mining to compare.
+2. Removed fields that had near zero variance.
+3. Removed id fields
+4. Removed fields that meant the same thing (title fields)
+
+```{r}
+join = function(){
+  joined.ds = sqldf("select a.anime_id, a.title, a.type, a.source, a.episodes,  a.duration, a.rating, a.score, a.scored_by, a.rank, a.popularity, a.members, a.related, a.favorites, a.broadcast, a.producer, a.licensor, a.studio, a.genre,  m.username, m.my_watched_episodes, m.my_score, m.my_status, u.user_watching, u.user_completed,  u.user_onhold, u.user_dropped, u.user_plantowatch, u.gender, u.join_date, u.last_online
+      from ani as a 
+      join myusrAni as m
+        on a.anime_id = m.anime_id
+      join usr as u
+        on u.username = m.username")
+  wrt.usr.anime.file = paste0(wd,"/myAnimeList Dataset/joinedDS.csv")
+  write.table(joined.ds, wrt.usr.anime.file, append = F, sep = ",", col.names = T, row.names = F)
+  return(joined.ds)
+}
+```
+
+#Main
+
+5654000 records processed.
+
+This is commented out so we don't accidentally run it again.  It takes a few hours on my laptop.
+```{r}
+# setwd("D:/Data Analytic Applications/anime")
+
+# prc.usr.anime.file(2000, wd)
+```
+```{r}
+wd = "C:/Users/darth/Desktop/"
+myusrAni = read.file("/myAnimeList Dataset/", "MycleanUserAnimeList.csv")
+nrow(myusrAni)
+
+ani = read.file("/myAnimeList Dataset/", "AnimeList.csv")
+#head(ani)
+
+usr = read.file("/myAnimeList Dataset/", "UserList.csv")
+#head(usr)
+
+```
+
+#Join the datasets together
+
+Join the datasets and check the fields.  I have removed a lot of fields. 
+```{r}
+all_ds = join()
+```
+
+Look at the structure and the skewness of any numeric type column
+```{r}
+str(all_ds)
+summary(all_ds)
+colnames(all_ds[sapply(all_ds, class) == "integer"])
+skewness(all_ds[,c(colnames(all_ds[sapply(all_ds, class) == "integer"]))])
+
+colnames(all_ds[sapply(all_ds, class) == "numeric"])
+
+histogram(all_ds$score, all_ds)
+```
+
+#Evaluation of the sample dataset
+
+If we get a random sample from the User to Anime list then we see a pretty nice sample of number of times a users did a score, the number of times the anime show occurs in the list and the distribution of the scores are reasonable. (More high than low, greater counts in the high range. 
+```{r}
+sqldf("select title, count(title) as cnt
+      from all_ds
+      group by title
+      order by cnt desc ")
+sqldf("select username, count(username) as cnt
+      from all_ds
+      group by username
+      order by cnt desc ")
+sqldf("select my_score, count(my_score) as cnt
+      from all_ds
+      group by my_score
+      order by my_score desc ")
+sqldf("select username, anime_id, my_score, count(*) as cnt
+      from all_ds
+      group by username, anime_id, my_score
+      having cnt > 1
+      order by cnt desc ")
+sqldf("select username, anime_id, count(anime_id) as cnt
+      from all_ds
+      group by username, anime_id
+      having cnt > 1
+      order by anime_id, cnt desc ")
+
+```
+
+#Exploration
+What does the animeList and the UserList look like?
+```{r}
+str(ani[c("anime_id", "title", "type", "source", "episodes", "duration", "rating", "score","scored_by", "rank", "popularity", "members", "related", "favorites", "premiered","broadcast", "producer", "licensor", "studio", "genre")])
+summary(ani[c("anime_id", "title", "type", "source", "episodes", "aired_string", "duration", "rating", "score","scored_by", "rank", "popularity", "members", "related", "favorites", "premiered","broadcast", "producer", "licensor", "studio", "genre")])
+
+str(usr)
+summary(usr[, c("user_watching", "user_completed", "user_onhold", "user_dropped", "user_plantowatch", "gender", "join_date", "last_online")])
+
+summary(all_ds)
+summary(myusrAni)
+
+#nearZeroVar check
+colnames(ani[, c(nearZeroVar(ani))])
+colnames(usr[, c(nearZeroVar(usr))])
+colnames(myusrAni[,c(nearZeroVar(myusrAni))])
+
+```
+
+# Alterations
+
+Convert the multiple level factors into less than 4, if possible.
+
+1. Convert last_online to 
+Blank or 1900 into Not reported or 1900
+Greater than 1900 to 2017 into Before 2018
+Equal to 2018 into 2018
+```{r}
+sqldf("select yr.yr, count(1) as cnt
+      from (select substr(last_online, 1,4) as yr
+        from all_ds) as yr
+      group by yr.yr")
+all_ds$lst_online_yr = substr(all_ds$last_online, 1,4)
+head(all_ds$lst_online_yr)
+all_ds$lst_online_yr[all_ds$lst_online_yr=="1900" | all_ds$lst_online_yr== ""] = "Not Reported or 1900"
+all_ds$lst_online_yr[all_ds$lst_online_yr > "1900" & all_ds$lst_online_yr <= "2017"] = "Before 2018"
+
+all_ds$lst_online_yr[all_ds$lst_online_yr=="2018"] = "2018"
+sqldf("select lst_online_yr, count(1) as cnt
+      from all_ds
+      group by lst_online_yr
+      order by cnt desc ")
+class(all_ds$lst_online_yr)
+all_ds$lst_online_yr = as.factor(all_ds$lst_online_yr)
+summary(all_ds$lst_online_yr)
+```
+Convert join_date to:
+3 generations.
+Early - before 2009
+Middle = 2009 - 2012
+Late = 2012 - current
+```{r}
+sqldf("select yr.yr, count(1) as cnt
+      from (select substr(join_date, 1,4) as yr
+        from all_ds) as yr
+      group by yr.yr")
+all_ds$join_yr = substr(all_ds$join_date, 1,4)
+#head(all_ds$join_yr)
+all_ds$join_yr[all_ds$join_yr >= "2012" ] = "Late"
+all_ds$join_yr[all_ds$join_yr < "2009" | all_ds$join_yr== ""] = "Early"
+all_ds$join_yr[all_ds$join_yr >= "2009" & all_ds$join_yr < "2012" ] = "Middle"
+
+sqldf("select join_yr, count(1) as cnt
+      from all_ds
+      group by join_yr
+      order by cnt desc ")
+all_ds$join_yr = as.factor(all_ds$join_yr)
+summary(all_ds$join_yr)
+
+```
+
+
+Gender
+```{r}
+#all_ds$gnd_grp = all_ds$gender
+all_ds$gnd_grp[all_ds$gender == "Female"] = "Female"
+all_ds$gnd_grp[all_ds$gender == "Male"] = "Male"
+all_ds$gnd_grp[all_ds$gender == ""] = "Non-Binary"
+all_ds$gnd_grp[all_ds$gender == "Non-Binary"] = "Non-Binary"
+sqldf("Select gnd_grp, count(1) as cnt
+      from all_ds
+      group by gnd_grp")
+all_ds$gnd_grp = as.factor(all_ds$gnd_grp)
+class(all_ds$gnd_grp)
+summary(all_ds$gnd_grp)
+```
+
+source
+```{r}
+#all_ds$anime_src = all_ds$source
+
+all_ds$anime_src[all_ds$source == "Novel"] = "Book"
+all_ds$anime_src[all_ds$source == "Light novel"] = "Book"
+all_ds$anime_src[all_ds$source == "Picture book"] = "Book"
+all_ds$anime_src[all_ds$source == "Visual novel"] = "Book"
+all_ds$anime_src[all_ds$source == "Book"] = "Book"
+
+all_ds$anime_src[all_ds$source == "Unknown"] = "Other"
+all_ds$anime_src[all_ds$source == "Music"] = "Other"
+all_ds$anime_src[all_ds$source == "Radio"] = "Other"
+all_ds$anime_src[all_ds$source == "Original"] = "Other"
+all_ds$anime_src[all_ds$source == "Other"] = "Other"
+
+all_ds$anime_src[all_ds$source == "Card game"] = "Game"
+all_ds$anime_src[all_ds$source == "Game"] = "Game"
+
+all_ds$anime_src[all_ds$source == "Web manga"] = "Manga"
+all_ds$anime_src[all_ds$source == "4-koma manga"] = "Manga"
+all_ds$anime_src[all_ds$source == "Digital manga"] = "Manga"
+all_ds$anime_src[all_ds$source == "Manga"] = "Manga"
+
+sqldf("Select anime_src, count(1) as cnt
+      from all_ds
+      group by anime_src")
+
+sqldf("Select anime_src, source
+      from all_ds
+      group by anime_src, source")
+
+all_ds$anime_src= as.factor(all_ds$anime_src)
+summary(all_ds$anime_src)
+#summary(all_ds$source)
+```
+
+
+duration
+```{r}
+all_ds$dur = substr(all_ds$duration, 1,3)
+
+
+all_ds$anime_len[all_ds$dur >= "1" & all_ds$dur < "21" ] = "1-20"
+all_ds$anime_len[all_ds$dur >= "21" & all_ds$dur < "41" ] = "21-40"
+all_ds$anime_len[all_ds$dur >= "41" & all_ds$dur < "60" ] = "41-60"
+all_ds$anime_len[all_ds$dur == "1 h" ] = "hour"
+all_ds$anime_len[all_ds$dur == "2 h" ] = "movie"
+all_ds$anime_len[all_ds$dur == "2 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "1 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "3 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "4 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "5 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "6 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "7 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "8 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "9 m" ] = "1-20"
+all_ds$anime_len[all_ds$dur == "Unk" ] = "1-20"
+
+
+sqldf("Select anime_len, count(1) as cnt
+      from all_ds
+      group by anime_len")
+
+sqldf("Select anime_len, substr(duration, 1,3)  as dur
+      from all_ds
+      group by anime_len, dur")
+
+
+all_ds$anime_len = as.factor(all_ds$anime_len)
+summary(all_ds$anime_len)
+```
+
+#Related
+Categorize related
+```{r}
+sqldf("SELECT substr(related, 1,10) as first10, count(1)
+      FROM all_ds
+      GROUP by first10")
+all_ds$relate = substr(all_ds$related, 1,10)
+all_ds$related_by[all_ds$relate == "{'Adaptati"] = "Adaptations"
+all_ds$related_by[all_ds$relate == "{'Parent s"] = "Relatives"
+all_ds$related_by[all_ds$relate == "{'Prequel'"] = "Relatives"
+all_ds$related_by[all_ds$relate == "{'Sequel':"] = "Relatives"
+all_ds$related_by[all_ds$relate == "{'Alternat"] = "Alternatives"
+all_ds$related_by[all_ds$relate == "{'Spin-off"] = "Alternatives"
+all_ds$related_by[all_ds$relate == "{'Side sto"] = "Alternatives"
+all_ds$related_by[all_ds$relate == "{'Other': "] = "Other"
+all_ds$related_by[all_ds$relate == "{'Full sto"] = "Other"
+all_ds$related_by[all_ds$relate == "{'Summary'"] = "Other"
+all_ds$related_by[all_ds$relate == "{'Characte"] = "Other"
+all_ds$related_by[all_ds$relate == "[]"] = "Other"
+all_ds$related_by[all_ds$relate == ""] = "Other"
+
+
+sqldf("select related_by, count(1) as cnt
+      from all_ds
+      group by related_by
+      order by cnt desc")
+
+all_ds$related_by = as.factor(all_ds$related_by)
+summary(all_ds$related_by)
+```
+
+
+My_score
+Categorize my_score into high and low
+```{r}
+all_ds$my_scr_bin = all_ds$my_score
+
+all_ds = subset(all_ds, all_ds$my_score != "0")
+all_ds = subset(all_ds, all_ds$my_score != "")
+
+length(all_ds$my_score)
+
+all_ds$my_scr_bin = as.factor(ifelse((all_ds$my_score) == "8" | (all_ds$my_score) == "9" | (all_ds$my_score) == "10", "high", "low"))
+
+table(all_ds$my_scr_bin)
+class(all_ds$my_scr_bin)
+
+```
+My watched episodes
+```{r}
+sqldf("select distinct my_watched_episodes from all_ds order by my_watched_episodes")
+all_ds$my_watched_episodes_int = as.integer(all_ds$my_watched_episodes)
+
+summary(all_ds$my_watched_episodes_int)
+```
+
+Broadcast
+```{r}
+sqldf("SELECT substr(broadcast, 1,10) as broad10, count(1)
+      FROM all_ds
+      GROUP by broad10")
+
+all_ds$broad = substr(all_ds$broadcast, 1,10)
+all_ds$broadcasted[all_ds$broad == "Sundays at"] = "Sunday"
+all_ds$broadcasted[all_ds$broad == "Mondays at"] = "Monday"
+all_ds$broadcasted[all_ds$broad == "Tuesdays a"] = "Tuesday"
+all_ds$broadcasted[all_ds$broad == "Wednesdays"] = "Wednesday"
+all_ds$broadcasted[all_ds$broad == "Thursdays "] = "Thursday"
+all_ds$broadcasted[all_ds$broad == "Fridays at"] = "Friday"
+all_ds$broadcasted[all_ds$broad == "Saturdays "] = "Saturday"
+all_ds$broadcasted[all_ds$broad == "Not schedu"] = "Other"
+all_ds$broadcasted[all_ds$broad == "Unknown"] = "Other"
+all_ds$broadcasted[all_ds$broad == ""] = "Other"
+
+sqldf("select broadcasted, count(1) as cnt
+      from all_ds
+      group by broadcasted
+      order by cnt desc")
+all_ds$broadcasted = as.factor(all_ds$broadcasted)
+summary(all_ds$broadcasted)
+```
+
+Producer
+```{r}
+dsProd = sqldf("SELECT substr(producer, 1,5) as prod5, count(1) as prodCount
+      FROM all_ds
+      GROUP by prod5")
+joinProd = sqldf("select producer, prodCount
+                 from all_ds as j
+                 left join dsProd as d
+                 on substr(j.producer, 1,5) = d.prod5")
+
+
+all_ds$prodCount = joinProd$prodCount
+all_ds$prodHL[all_ds$prodCount >= "250" ] = "High"
+all_ds$prodHL[all_ds$prodCount < "250" ] = "Low"
+
+sqldf("select prodHL, count(1) as cnt
+      from all_ds
+      group by prodHL
+      order by cnt desc")
+all_ds$prodHL = as.factor(all_ds$prodHL)
+summary(all_ds$prodHL)
+```
+
+Licensor:
+```{r}
+dsLic = sqldf("SELECT substr(licensor, 1,5) as lic5, count(1) as licCount
+      FROM all_ds
+      GROUP by lic5")
+joinLic = sqldf("select licensor, licCount
+                 from all_ds as j
+                 left join dsLic as d
+                 on substr(j.licensor, 1,5) = d.lic5")
+
+
+all_ds$licCount = joinLic$licCount
+all_ds$licHL[all_ds$licCount >= "250" ] = "High"
+all_ds$licHL[all_ds$licCount < "250" ] = "Low"
+
+sqldf("select licHL, count(1) as cnt
+      from all_ds
+      group by licHL
+      order by cnt desc")
+
+all_ds$licHL = as.factor(all_ds$licHL)
+summary(all_ds$licHL)
+```
+
+Studio:
+```{r}
+dsStud = sqldf("SELECT substr(studio, 1,8) as stud8, count(1) as studCount
+      FROM all_ds
+      GROUP by stud8")
+joinStud = sqldf("select studio, studCount
+                 from all_ds as j
+                 left join dsStud as d
+                 on substr(j.studio, 1,8) = d.stud8")
+
+
+all_ds$studCount = joinStud$studCount
+all_ds$studHL[all_ds$studCount >= "350" ] = "High"
+all_ds$studHL[all_ds$studCount < "350" ] = "Low"
+
+sqldf("select studHL, count(1) as cnt
+      from all_ds
+      group by studHL
+      order by cnt desc")
+all_ds$studHL = as.factor(all_ds$studHL)
+summary(all_ds$studHL)
+```
+
+Rating
+```{r}
+summary(all_ds$rating)
+all_ds$rate[all_ds$rating == "G - All Ages"]  = "G+"
+all_ds$rate[all_ds$rating == "None"]  = "G+"
+all_ds$rate[all_ds$rating == "PG - Children"]  = "G+"
+all_ds$rate[all_ds$rating == "PG-13 - Teens 13 or older"]  = "G+"
+
+all_ds$rate[all_ds$rating == "R - 17+ (violence & profanity)"]  = "R+"
+all_ds$rate[all_ds$rating == "R+ - Mild Nudity"]  = "R+"
+all_ds$rate[all_ds$rating == "Rx - Hentai"]  = "R+"
+all_ds$rate = as.factor(all_ds$rate)
+summary(all_ds$rate)
+
+```
+
+
+Rank and type
+The rank has 0.2% missing records. It is the only variable with mssing.  since it is so low, we chose to delete the missing rows. 
+```{r}
+all_ds$rank_no_na = all_ds$rank
+ds = na.omit(all_ds)
+summary(ds$rank)
+summary(all_ds$rank)
+length(ds$rank)
+length(all_ds$rank)
+ds$type = droplevels(ds)$type
+str(ds)
+```
+
+
+If this runs, do a corplot underneath it ############################
+```{r}
+cols = colnames(final_ds[sapply(final_ds, class) == "integer"])
+
+corr = cor(final_ds[,c(cols)], method = "pearson")
+
+corrplot(corr, method = "circle", type="lower")
+```
+```
+
+, "broadcast", "producer", "licensor", "studio"
+```{r}
+colnames(ds)
+
+final_ds = ds[, c("my_scr_bin", "type", "anime_src", "episodes", "anime_len", "rate", "score", "scored_by", "rank", "popularity", "members", "favorites", "my_watched_episodes_int",  "user_watching", "user_completed", "user_onhold", "user_dropped", "user_plantowatch", "lst_online_yr", "join_yr", "gnd_grp", "related_by", "prodHL", "licHL", "studHL", "broadcasted")]
+summary(final_ds)
+str(final_ds)
+head(final_ds)
+
+train = createDataPartition(final_ds[,1], p = .75, list = F)
+f.train = final_ds[train,]
+f.test = final_ds[-train,]
+
+class(f.train$my_scr_bin)
+summary(final_ds$anime_src)
+```
+
+stepwise AIC
+```{r}
+Sys.time()
+glmTune = train(my_scr_bin ~ ., data = f.train,
+                 method = "glmStepAIC", 
+                 direction = "both",
+                 metric = "Sensitivity",
+                 family="binomial",
+                 na.action = na.exclude,
+                 preProc = c("center", "scale"))
+Sys.time()
+
+```
+```{r}
+glmTune
+colnames(glmTune$finalModel$model)
+```
+
+Model input
+```{r}
+model = my_scr_bin ~ anime_src + anime_len + rate + score + scored_by + rank + popularity + favorites + user_watching + user_completed + user_onhold + user_dropped + user_plantowatch + lst_online_yr + join_yr + gnd_grp + broadcasted
+model
+```
+
+Random Forest
+, repeats=3
+```{r}
+Sys.time()
+set.seed(123)
+control = trainControl(method = "cv", classProbs = T,summaryFunction = twoClassSummary, number = 10, search="grid")
+metric = "Sensitivity"
+mtry = sqrt(ncol(f.train))
+tunegrid = expand.grid(.mtry=c(1:15))
+
+rfTune = train(model, data=f.train, 
+                    method="rf", 
+                    na.action = na.exclude,
+                    metric=metric, 
+                    tuneGrid=tunegrid, 
+                    trControl=control)
+
+Sys.time()
+```
+
+```{r}
+rfTune
+
+prfTune = ggplot(rfTune$results, aes(x = Sens, y = mtry))
+prfTune=prfTune + geom_point() +
+  xlim(0.70, 0.72) +
+  xlab("Sensitivity") +
+  ylab("Mtry")+
+  ggtitle("Random Forest Sensitivity Plot")+
+  theme_bw()
+prfTune= prfTune+geom_text(aes(label=
+                     paste0("", rfTune$results$mtry,", ",
+                            round(rfTune$results$Sens,4)*100, "%")
+                   ), hjust= -.1)
+
+prfTune
+```
+
+predict RF
+```{r}
+
+rfpred = predict(rfTune, newdata = f.test)
+
+confusionMatrix(rfpred,f.test$my_scr_bin)
+
+```
+
+Knn
+```{r}
+Sys.time()
+set.seed(123)
+knnTune = train(model, data = f.train,
+                 method = "knn", 
+                 metric = "Sensitivity",
+                 na.action = na.exclude,
+                 preProc = c("center", "scale"), 
+                 tuneGrid = data.frame(.k = 35:55), 
+                 trControl = trainControl(method = "cv", classProbs = T,summaryFunction = twoClassSummary, number =10))
+Sys.time()
+
+```
+
+```{r}
+#str(knnTune)
+knnTune
+
+pknnTrain = ggplot(knnTune$results, aes(x = Sens, y = k))
+pknnTrain=pknnTrain + geom_point() +
+  xlim(0.71, 0.74) +
+  xlab("Sensitivity") +
+  ylab("K")+
+  ggtitle("Knn K Sensitivity Plot")+
+  theme_bw()
+pknnTrain= pknnTrain+geom_text(aes(label=
+                     paste0(knnTune$results$k,", ",
+                            round(knnTune$results$Sens,4)*100, "%")
+                   ), hjust= -.1)
+pknnTrain
+```
+
+predict KNN
+```{r}
+knnpred = predict.train(knnTune, newdata = f.test)
+
+confusionMatrix(knnpred,f.test$my_scr_bin)
+```
+
+Logistic Regression
+```{r}
+Sys.time()
+logTune = train(model, data = f.train,
+                 method = "glm", 
+                 metric = "Sensitivity",
+                 family="binomial",
+                 na.action = na.exclude,
+                 preProc = c("center", "scale") , 
+                 trControl = trainControl(method = "cv", 
+                                          classProbs = T,
+                                          summaryFunction = twoClassSummary,
+                                          number =10))
+
+Sys.time()
+
+```
+```{r}
+#str(logTune)
+logTune$finalModel$qr
+logTune$finalModel
+
+```
+
+
+
+
